@@ -1,13 +1,6 @@
 pipeline {
     agent any
-    
-    environment {
-        APP_NAME = "jenkins-demo-app"
-        DOCKER_IMAGE = "${APP_NAME}"
-        BUILD_TAG = "${BUILD_NUMBER}"
-        CONTAINER_NAME = "${APP_NAME}-${BUILD_NUMBER}"
-    }
-    
+
     stages {
         stage('Checkout') {
             steps {
@@ -15,97 +8,83 @@ pipeline {
                 checkout scm
             }
         }
-        
+
         stage('Install Dependencies') {
             steps {
                 echo '📦 Installing Node.js dependencies...'
                 sh 'npm install'
             }
         }
-        
+
         stage('Run Tests') {
             steps {
                 echo '✅ Running tests...'
                 sh 'npm test'
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
                 echo '🐳 Building Docker image...'
                 script {
-                    sh "docker build -t ${DOCKER_IMAGE}:${BUILD_TAG} ."
-                    sh "docker tag ${DOCKER_IMAGE}:${BUILD_TAG} ${DOCKER_IMAGE}:latest"
+                    sh 'docker build -t jenkins-demo-app:${BUILD_NUMBER} .'
+                    sh 'docker tag jenkins-demo-app:${BUILD_NUMBER} jenkins-demo-app:latest'
                 }
             }
         }
-        
+
         stage('Test Docker Image') {
             steps {
                 echo '🧪 Testing Docker image...'
                 script {
-                    sh "docker images | grep ${DOCKER_IMAGE}"
+                    sh 'docker images | grep jenkins-demo-app'
                 }
             }
         }
-        
+
         stage('Deploy') {
             steps {
                 echo '🚀 Deploying application...'
                 script {
-                    // Stop old containers with this app name
-                    sh '''
-                        docker ps -a | grep ${APP_NAME} | awk '{print $1}' | xargs -r docker stop || true
-                        docker ps -a | grep ${APP_NAME} | awk '{print $1}' | xargs -r docker rm || true
-                    '''
-                    
-                    // Run the new container, expose port 3000
-                    sh "docker run -d --name ${CONTAINER_NAME} -p 3000:3000 ${DOCKER_IMAGE}:${BUILD_TAG}"
-                    
-                    // Give the container some time to start
-                    sh 'sleep 5'
-                    
-                    // Run health check inside the container itself
-                    sh "docker exec ${CONTAINER_NAME} curl -f http://localhost:3000/health || exit 1"
+                    def containerName = "jenkins-demo-app-${BUILD_NUMBER}"
+
+                    // עצירת קונטיינרים קיימים עם שם דומה (אם יש)
+                    sh """
+                    docker ps -a --filter "name=jenkins-demo-app" --format "{{.ID}}" | xargs -r docker stop
+                    docker ps -a --filter "name=jenkins-demo-app" --format "{{.ID}}" | xargs -r docker rm
+                    """
+
+                    // הרצת הקונטיינר החדש
+                    sh "docker run -d --name ${containerName} -p 3000:3000 jenkins-demo-app:${BUILD_NUMBER}"
+
+                    // השהייה כדי שהאפליקציה תעלה
+                    sh "sleep 5"
                 }
             }
         }
-        
+
         stage('Verify Deployment') {
             steps {
-                echo '✅ Verifying deployment...'
-                script {
-                    sh "docker ps | grep ${CONTAINER_NAME}"
-                    sh "docker exec ${CONTAINER_NAME} curl -s http://localhost:3000 | grep 'Jenkins CI/CD Demo'"
-                    echo '✅ Application is running successfully!'
-                }
+                echo '🔍 Verifying deployment...'
+                // ביצוע קריאת health מחוץ לקונטיינר
+                sh 'curl -f http://localhost:3000/health || (echo "Health check failed" && exit 1)'
             }
         }
     }
-    
+
     post {
-        success {
-            echo '''
-            ✅✅✅ Pipeline Completed Successfully! ✅✅✅
-            🚀 Application deployed and running on http://localhost:3000
-            🐳 Docker image: ${DOCKER_IMAGE}:${BUILD_TAG}
-            🎉 Build #${BUILD_NUMBER} is live!
-            '''
-        }
-        failure {
-            echo '❌ Pipeline failed! Check the logs above.'
-            script {
-                sh "docker stop ${CONTAINER_NAME} 2>/dev/null || true"
-                sh "docker rm ${CONTAINER_NAME} 2>/dev/null || true"
-            }
-        }
         always {
-            echo 'Cleaning up old images...'
+            echo '🧹 Cleaning up old images...'
             script {
+                // מחיקת תמונות ישנות למעט הנוכחית
                 sh '''
-                    docker images | grep ${DOCKER_IMAGE} | grep -v latest | grep -v ${BUILD_TAG} | awk '{print $3}' | xargs -r docker rmi -f || true
+                docker images jenkins-demo-app --format "{{.ID}} {{.Tag}}" | grep -v latest | grep -v ${BUILD_NUMBER} | awk '{print $1}' | xargs -r docker rmi -f || true
                 '''
             }
+        }
+
+        failure {
+            echo '❌ Pipeline failed! Check logs.'
         }
     }
 }
